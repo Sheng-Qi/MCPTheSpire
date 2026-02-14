@@ -27,7 +27,7 @@ public class MCPToolHandler {
     private static final Logger logger = LogManager.getLogger(MCPToolHandler.class.getName());
     private static final Gson gson = new Gson();
 
-    // Read-only tools that can be executed on any thread
+    // Read-only tools (do not mutate game state)
     private static final Set<String> READ_ONLY_TOOLS = new HashSet<>(Arrays.asList(
         "get_game_state",
         "get_screen_state",
@@ -36,11 +36,27 @@ public class MCPToolHandler {
         "get_relic_info"
     ));
 
+    // Thread-safe tools that can run off the game thread
+    private static final Set<String> HTTP_THREAD_SAFE_TOOLS = new HashSet<>(Arrays.asList(
+        "get_card_info",
+        "get_relic_info"
+    ));
+
     /**
-     * Check if a tool is read-only and safe to execute on any thread.
+     * Check if a tool is read-only (does not mutate game state).
      */
     public boolean isReadOnlyTool(String toolName) {
         return READ_ONLY_TOOLS.contains(toolName);
+    }
+
+    /**
+     * Check if a tool is safe to execute on the HTTP thread.
+     *
+     * Note: Some read-only tools still touch live game objects and reflection-heavy
+     * paths, so they must run on the game thread to avoid cross-thread races.
+     */
+    public boolean isHttpThreadSafeTool(String toolName) {
+        return HTTP_THREAD_SAFE_TOOLS.contains(toolName);
     }
 
     /**
