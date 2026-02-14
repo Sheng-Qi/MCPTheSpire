@@ -24,6 +24,7 @@ import com.megacrit.cardcrawl.relics.RunicDome;
 import com.megacrit.cardcrawl.rewards.RewardItem;
 import com.megacrit.cardcrawl.rooms.*;
 import com.megacrit.cardcrawl.screens.DeathScreen;
+import com.megacrit.cardcrawl.screens.GameOverScreen;
 import com.megacrit.cardcrawl.screens.VictoryScreen;
 import com.megacrit.cardcrawl.screens.select.GridCardSelectScreen;
 import com.megacrit.cardcrawl.shop.ShopScreen;
@@ -491,10 +492,10 @@ public class GameStateConverter {
         int score = 0;
         boolean victory = false;
         if(AbstractDungeon.deathScreen != null) {
-            score = (int) ReflectionHacks.getPrivate(AbstractDungeon.deathScreen, DeathScreen.class, "score");
+            score = (int) ReflectionHacks.getPrivate(AbstractDungeon.deathScreen, GameOverScreen.class, "score");
             victory = AbstractDungeon.deathScreen.isVictory;
         } else if(AbstractDungeon.victoryScreen != null) {
-            score = (int) ReflectionHacks.getPrivate(AbstractDungeon.victoryScreen, VictoryScreen.class, "score");
+            score = (int) ReflectionHacks.getPrivate(AbstractDungeon.victoryScreen, GameOverScreen.class, "score");
             victory = true;
         }
         state.put("score", score);
