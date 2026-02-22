@@ -44,6 +44,9 @@ public class MCPServer implements Runnable {
     private final BlockingQueue<PendingToolCall> pendingToolCalls;
     private final BlockingQueue<Map<String, Object>> toolCallResults;
 
+    // Serialize tool handler execution to avoid cross-thread reads during game mutation/rendering
+    private final Object toolExecutionLock = new Object();
+
     // Pending batch execution state (for execute_actions across multiple frames)
     private PendingBatchExecution pendingBatch = null;
     private long lastBatchActionTime = 0;
@@ -317,14 +320,18 @@ public class MCPServer implements Runnable {
 
         logger.info("Tool call: " + toolName + " with args: " + arguments);
 
-        // Check if this is a read-only tool that can be executed directly
-        if (toolHandler.isReadOnlyTool(toolName)) {
-            logger.info("Executing read-only tool directly on HTTP thread: " + toolName);
+        // Execute only tools that are explicitly safe on the HTTP thread.
+        // Some read-only tools still access live game/UI state and must run on the game thread.
+        if (toolHandler.isHttpThreadSafeTool(toolName)) {
+            logger.info("Executing HTTP-thread-safe tool directly on HTTP thread: " + toolName);
             try {
-                Map<String, Object> result = toolHandler.executeTool(toolName, arguments);
+                Map<String, Object> result;
+                synchronized (toolExecutionLock) {
+                    result = toolHandler.executeTool(toolName, arguments);
+                }
                 return MCPProtocol.buildResponse(id, result);
             } catch (Exception e) {
-                logger.error("Error executing read-only tool: " + toolName, e);
+                logger.error("Error executing HTTP-thread-safe tool: " + toolName, e);
                 return MCPProtocol.buildErrorResponse(id, MCPProtocol.ERROR_INTERNAL, e.getMessage());
             }
         }
@@ -410,7 +417,10 @@ public class MCPServer implements Runnable {
             }
 
             try {
-                Map<String, Object> result = toolHandler.executeTool(pending.toolName, pending.arguments);
+                Map<String, Object> result;
+                synchronized (toolExecutionLock) {
+                    result = toolHandler.executeTool(pending.toolName, pending.arguments);
+                }
                 toolCallResults.add(result);
                 logger.info("Tool result added to queue");
             } catch (Exception e) {
