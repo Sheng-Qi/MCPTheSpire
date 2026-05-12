@@ -392,6 +392,11 @@ public class MCPServer implements Runnable {
     public void processPendingToolCalls() {
         // First, continue any pending batch execution
         if (pendingBatch != null) {
+            if (pendingBatch.finishRequested) {
+                // Previous frame's action completed; now finish with settled state
+                finishBatchExecution();
+                return;
+            }
             processBatchAction();
             return;
         }
@@ -420,6 +425,11 @@ public class MCPServer implements Runnable {
                 Map<String, Object> result;
                 synchronized (toolExecutionLock) {
                     result = toolHandler.executeTool(pending.toolName, pending.arguments);
+                }
+                // For mutating tools, enrich result with current game state
+                // so the caller doesn't need a separate get_screen_state call
+                if (!toolHandler.isReadOnlyTool(pending.toolName)) {
+                    result = enrichWithState(result);
                 }
                 toolCallResults.add(result);
                 logger.info("Tool result added to queue");
@@ -571,14 +581,15 @@ public class MCPServer implements Runnable {
             // Check if screen changed (stop execution if it did)
             pendingBatch.checkScreenChange();
 
-            // If no more actions, finish now
+            // If no more actions, request finish on NEXT frame
+            // This gives the game one frame to process card queues, animations, etc.
             if (!pendingBatch.hasMoreActions()) {
-                finishBatchExecution();
+                pendingBatch.finishRequested = true;
             }
             // Otherwise, next action will be processed in next frame
         } catch (Exception e) {
             pendingBatch.markError(actionType, e.getMessage());
-            finishBatchExecution();
+            pendingBatch.finishRequested = true;
         }
     }
 
@@ -602,7 +613,10 @@ public class MCPServer implements Runnable {
         }
 
         logger.info("Batch execution finished: " + pendingBatch.successCount + "/" + total);
-        toolCallResults.add(MCPProtocol.buildToolCallResult(message, pendingBatch.errorMessage != null));
+        Map<String, Object> result = MCPProtocol.buildToolCallResult(message, pendingBatch.errorMessage != null);
+        // Enrich with current game state so caller sees post-action state immediately
+        result = enrichWithState(result);
+        toolCallResults.add(result);
         pendingBatch = null;
     }
 
@@ -669,6 +683,38 @@ public class MCPServer implements Runnable {
     }
 
     /**
+     * Enrich a tool result with current game state.
+     * Appends state as a second text content item (JSON) so callers get
+     * both the action result and the updated screen state in one response.
+     */
+    private Map<String, Object> enrichWithState(Map<String, Object> toolResult) {
+        if (!mcpthespire.CommandExecutor.isInDungeon()) {
+            return toolResult;
+        }
+
+        // Clone the result map so we don't mutate the original
+        Map<String, Object> enriched = new java.util.LinkedHashMap<>(toolResult);
+
+        // Get the content list (clone it)
+        @SuppressWarnings("unchecked")
+        java.util.List<Map<String, Object>> originalContent = (java.util.List<Map<String, Object>>) toolResult.get("content");
+        if (originalContent == null) {
+            originalContent = new java.util.ArrayList<>();
+        }
+        java.util.List<Map<String, Object>> newContent = new java.util.ArrayList<>(originalContent);
+
+        // Add state as a second JSON text content item
+        Map<String, Object> stateData = mcpthespire.GameStateConverter.getScreenOnlyState();
+        Map<String, Object> stateContentItem = new HashMap<>();
+        stateContentItem.put("type", "text");
+        stateContentItem.put("text", gson.toJson(stateData));
+        newContent.add(stateContentItem);
+
+        enriched.put("content", newContent);
+        return enriched;
+    }
+
+    /**
      * Represents a pending tool call waiting to be executed on the game thread.
      */
     private static class PendingToolCall {
@@ -694,6 +740,7 @@ public class MCPServer implements Runnable {
         String failedAction;
         String errorMessage;
         boolean screenChanged;
+        boolean finishRequested;
         mcpthespire.ChoiceScreenUtils.ChoiceType initialScreen;
         boolean initialInDungeon;
         // Initial hand UUIDs for stable card_index resolution
@@ -709,6 +756,7 @@ public class MCPServer implements Runnable {
             this.failedAction = null;
             this.errorMessage = null;
             this.screenChanged = false;
+            this.finishRequested = false;
             this.initialInDungeon = mcpthespire.CommandExecutor.isInDungeon();
             if (this.initialInDungeon) {
                 this.initialScreen = mcpthespire.ChoiceScreenUtils.getCurrentChoiceType();
