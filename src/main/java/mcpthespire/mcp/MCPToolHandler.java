@@ -122,6 +122,9 @@ public class MCPToolHandler {
         Map<String, Object> executeActionsProps = new HashMap<>();
         Map<String, Object> actionsArrayProp = new HashMap<>();
         actionsArrayProp.put("type", "array");
+        Map<String, Object> actionsItemsDef = new HashMap<>();
+        actionsItemsDef.put("type", "object");
+        actionsArrayProp.put("items", actionsItemsDef);
         actionsArrayProp.put("description",
             "Array of action objects. Each object has 'action' field plus action-specific params. " +
             "Available actions: " +
