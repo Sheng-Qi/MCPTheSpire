@@ -527,7 +527,7 @@ public class ChoiceScreenUtils {
 
     public static ArrayList<String> getCombatRewardScreenChoices() {
         ArrayList<String> choices = new ArrayList<>();
-        for(RewardItem reward : AbstractDungeon.combatRewardScreen.rewards) {
+        for(RewardItem reward : getSelectableCombatRewards()) {
             switch(reward.type) {
                 case GOLD:
                 case STOLEN_GOLD:
@@ -550,8 +550,18 @@ public class ChoiceScreenUtils {
     }
 
     public static void makeCombatRewardChoice(int choice) {
-        RewardItem reward = AbstractDungeon.combatRewardScreen.rewards.get(choice);
+        RewardItem reward = getSelectableCombatRewards().get(choice);
         reward.isDone = true;
+    }
+
+    private static ArrayList<RewardItem> getSelectableCombatRewards() {
+        ArrayList<RewardItem> selectableRewards = new ArrayList<>();
+        for (RewardItem reward : AbstractDungeon.combatRewardScreen.rewards) {
+            if (!reward.isDone) {
+                selectableRewards.add(reward);
+            }
+        }
+        return selectableRewards;
     }
 
     public static ArrayList<String> getBossRewardScreenChoices() {

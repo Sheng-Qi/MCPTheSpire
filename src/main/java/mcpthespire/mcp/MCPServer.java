@@ -42,13 +42,13 @@ public class MCPServer implements Runnable {
 
     // Queue for pending tool calls that need to be executed on the game thread
     private final BlockingQueue<PendingToolCall> pendingToolCalls;
-    private final BlockingQueue<Map<String, Object>> toolCallResults;
 
     // Serialize tool handler execution to avoid cross-thread reads during game mutation/rendering
     private final Object toolExecutionLock = new Object();
 
     // Pending batch execution state (for execute_actions across multiple frames)
     private PendingBatchExecution pendingBatch = null;
+    private PendingMutatingToolResult pendingMutatingToolResult = null;
     private long lastBatchActionTime = 0;
     private static final long MIN_BATCH_ACTION_INTERVAL_MS = 50; // Minimum time between batch actions
     private static final long MAX_WAIT_FOR_READY_MS = 10000; // Maximum time to wait for ready_for_command
@@ -70,7 +70,6 @@ public class MCPServer implements Runnable {
         this.toolHandler = new MCPToolHandler();
         this.gson = new Gson();
         this.pendingToolCalls = new LinkedBlockingQueue<>();
-        this.toolCallResults = new LinkedBlockingQueue<>();
     }
 
     @Override
@@ -343,7 +342,7 @@ public class MCPServer implements Runnable {
 
         // Wait for result (with timeout)
         try {
-            Map<String, Object> result = toolCallResults.poll(30, TimeUnit.SECONDS);
+            Map<String, Object> result = pending.awaitResult(30, TimeUnit.SECONDS);
             if (result == null) {
                 logger.error("Tool execution timeout - game thread did not process in 30 seconds");
                 return MCPProtocol.buildErrorResponse(id, MCPProtocol.ERROR_INTERNAL,
@@ -393,11 +392,32 @@ public class MCPServer implements Runnable {
         // First, continue any pending batch execution
         if (pendingBatch != null) {
             if (pendingBatch.finishRequested) {
-                // Previous frame's action completed; now finish with settled state
+                // The last action already ran; wait until the game becomes ready
+                // again so the final response reflects the settled post-action state.
+                if (shouldWaitForReady()) {
+                    return;
+                }
                 finishBatchExecution();
                 return;
             }
             processBatchAction();
+            return;
+        }
+
+        // Then, complete any pending mutating tool once the UI settles.
+        if (pendingMutatingToolResult != null) {
+            Map<String, Object> currentState = mcpthespire.GameStateConverter.getScreenOnlyState();
+            pendingMutatingToolResult.observeState(currentState);
+
+            if (shouldWaitForReady()) {
+                return;
+            }
+
+            Map<String, Object> result = enrichWithState(pendingMutatingToolResult.result);
+            pendingMutatingToolResult.pendingCall.complete(result);
+            logger.info("Tool result added after state settled: " + pendingMutatingToolResult.toolName);
+            pendingMutatingToolResult = null;
+            waitStartTime = 0;
             return;
         }
 
@@ -417,25 +437,34 @@ public class MCPServer implements Runnable {
 
             // Special handling for execute_actions - use async batch execution
             if ("execute_actions".equals(pending.toolName)) {
-                startBatchExecution(pending.arguments);
+                startBatchExecution(pending);
                 return;
             }
 
             try {
                 Map<String, Object> result;
+                Map<String, Object> preActionState = null;
+                if (!toolHandler.isReadOnlyTool(pending.toolName)) {
+                    preActionState = mcpthespire.GameStateConverter.getScreenOnlyState();
+                }
                 synchronized (toolExecutionLock) {
                     result = toolHandler.executeTool(pending.toolName, pending.arguments);
                 }
-                // For mutating tools, enrich result with current game state
-                // so the caller doesn't need a separate get_screen_state call
                 if (!toolHandler.isReadOnlyTool(pending.toolName)) {
-                    result = enrichWithState(result);
+                    if (Boolean.TRUE.equals(result.get("isError"))) {
+                        pending.complete(result);
+                        logger.info("Tool result added to queue (error): " + pending.toolName);
+                        return;
+                    }
+                    pendingMutatingToolResult = new PendingMutatingToolResult(pending, result, preActionState);
+                    waitStartTime = 0;
+                    return;
                 }
-                toolCallResults.add(result);
+                pending.complete(result);
                 logger.info("Tool result added to queue");
             } catch (Exception e) {
                 logger.error("Error executing tool: " + pending.toolName, e);
-                toolCallResults.add(MCPProtocol.buildToolCallResult("Error: " + e.getMessage(), true));
+                pending.complete(MCPProtocol.buildToolCallResult("Error: " + e.getMessage(), true));
             }
         }
     }
@@ -443,20 +472,21 @@ public class MCPServer implements Runnable {
     /**
      * Start a new batch execution.
      */
-    private void startBatchExecution(JsonObject params) {
+    private void startBatchExecution(PendingToolCall pendingCall) {
+        JsonObject params = pendingCall.arguments;
         if (!params.has("actions") || !params.get("actions").isJsonArray()) {
-            toolCallResults.add(MCPProtocol.buildToolCallResult("Error: 'actions' array is required", true));
+            pendingCall.complete(MCPProtocol.buildToolCallResult("Error: 'actions' array is required", true));
             return;
         }
 
         com.google.gson.JsonArray actions = params.getAsJsonArray("actions");
         if (actions.size() == 0) {
-            toolCallResults.add(MCPProtocol.buildToolCallResult("Error: 'actions' array is empty", true));
+            pendingCall.complete(MCPProtocol.buildToolCallResult("Error: 'actions' array is empty", true));
             return;
         }
 
         logger.info("Starting batch execution with " + actions.size() + " actions");
-        pendingBatch = new PendingBatchExecution(actions);
+        pendingBatch = new PendingBatchExecution(actions, pendingCall);
 
         // Execute first action immediately
         processBatchAction();
@@ -499,6 +529,7 @@ public class MCPServer implements Runnable {
         logger.info("Batch executing action " + (pendingBatch.currentIndex + 1) + "/" + pendingBatch.actions.size() + ": " + actionType);
 
         try {
+            PendingBatchExecution.ResolvedChoice resolvedChoice = null;
             if ("wait".equals(actionType)) {
                 // Wait action doesn't need frame delay, just a sleep
                 int waitMs = action.has("ms") ? action.get("ms").getAsInt() : 100;
@@ -537,21 +568,14 @@ public class MCPServer implements Runnable {
                             "Initial choices had " + pendingBatch.initialChoiceList.size() + " items: " +
                             pendingBatch.initialChoiceList);
                     }
-                    String choiceName = pendingBatch.initialChoiceList.get(originalIndex - 1);
-
                     // Find this choice in the current list to get the updated index
                     java.util.ArrayList<String> currentChoices = mcpthespire.ChoiceScreenUtils.getCurrentChoiceList();
-                    int newIndex = -1;
-                    for (int i = 0; i < currentChoices.size(); i++) {
-                        if (currentChoices.get(i).equals(choiceName)) {
-                            newIndex = i + 1;  // 1-indexed
-                            break;
-                        }
-                    }
+                    resolvedChoice = pendingBatch.resolveChoice(originalIndex, currentChoices);
+                    int newIndex = resolvedChoice.currentIndex;
 
                     if (newIndex == -1) {
                         throw new mcpthespire.InvalidCommandException(
-                            "Choice no longer available: " + choiceName +
+                            "Choice no longer available: " + resolvedChoice.choiceName +
                             ". Current choices: " + currentChoices);
                     }
 
@@ -564,7 +588,7 @@ public class MCPServer implements Runnable {
                     }
                     chooseAction.addProperty("choice_index", newIndex);
                     processedAction = chooseAction;
-                    logger.info("Resolved choice_index " + originalIndex + " -> " + newIndex + " (choice: " + choiceName + ")");
+                    logger.info("Resolved choice_index " + originalIndex + " -> " + newIndex + " (choice: " + resolvedChoice.choiceName + ", occurrence: " + resolvedChoice.currentOccurrence + ")");
                 }
 
                 // For select_cards with indices in drop/keep, convert to UUIDs for stable resolution
@@ -574,6 +598,10 @@ public class MCPServer implements Runnable {
 
                 // Execute the single action
                 toolHandler.executeSingleBatchAction(actionType, processedAction);
+
+                if (resolvedChoice != null) {
+                    pendingBatch.recordResolvedChoice(resolvedChoice.choiceName, resolvedChoice.originalOccurrence);
+                }
             }
             pendingBatch.markSuccess();
             lastBatchActionTime = System.currentTimeMillis();
@@ -616,7 +644,7 @@ public class MCPServer implements Runnable {
         Map<String, Object> result = MCPProtocol.buildToolCallResult(message, pendingBatch.errorMessage != null);
         // Enrich with current game state so caller sees post-action state immediately
         result = enrichWithState(result);
-        toolCallResults.add(result);
+        pendingBatch.pendingCall.complete(result);
         pendingBatch = null;
     }
 
@@ -664,7 +692,7 @@ public class MCPServer implements Runnable {
      * Check if there are pending tool calls or batch actions to process.
      */
     public boolean hasPendingToolCalls() {
-        return !pendingToolCalls.isEmpty() || pendingBatch != null;
+        return !pendingToolCalls.isEmpty() || pendingBatch != null || pendingMutatingToolResult != null;
     }
 
     public String getHost() {
@@ -721,11 +749,21 @@ public class MCPServer implements Runnable {
         final JsonElement id;
         final String toolName;
         final JsonObject arguments;
+        final BlockingQueue<Map<String, Object>> resultQueue;
 
         PendingToolCall(JsonElement id, String toolName, JsonObject arguments) {
             this.id = id;
             this.toolName = toolName;
             this.arguments = arguments;
+            this.resultQueue = new LinkedBlockingQueue<>(1);
+        }
+
+        void complete(Map<String, Object> result) {
+            resultQueue.offer(result);
+        }
+
+        Map<String, Object> awaitResult(long timeout, TimeUnit unit) throws InterruptedException {
+            return resultQueue.poll(timeout, unit);
         }
     }
 
@@ -734,6 +772,7 @@ public class MCPServer implements Runnable {
      */
     private static class PendingBatchExecution {
         final com.google.gson.JsonArray actions;
+        final PendingToolCall pendingCall;
         int currentIndex;
         int successCount;
         int failedIndex;
@@ -747,9 +786,11 @@ public class MCPServer implements Runnable {
         java.util.List<java.util.UUID> initialHandUuids;
         // Initial choice list for stable choice_index resolution
         java.util.List<String> initialChoiceList;
+        java.util.List<ResolvedChoiceRecord> resolvedChoices;
 
-        PendingBatchExecution(com.google.gson.JsonArray actions) {
+        PendingBatchExecution(com.google.gson.JsonArray actions, PendingToolCall pendingCall) {
             this.actions = actions;
+            this.pendingCall = pendingCall;
             this.currentIndex = 0;
             this.successCount = 0;
             this.failedIndex = -1;
@@ -772,6 +813,7 @@ public class MCPServer implements Runnable {
                 this.initialChoiceList = new java.util.ArrayList<>(
                     mcpthespire.ChoiceScreenUtils.getCurrentChoiceList());
             }
+            this.resolvedChoices = new java.util.ArrayList<>();
         }
 
         boolean hasMoreActions() {
@@ -800,6 +842,117 @@ public class MCPServer implements Runnable {
                     screenChanged = true;
                 }
             }
+        }
+
+        ResolvedChoice resolveChoice(int originalIndex, java.util.List<String> currentChoices) {
+            String choiceName = initialChoiceList.get(originalIndex - 1);
+            int originalOccurrence = getOccurrenceIndex(initialChoiceList, choiceName, originalIndex - 1);
+            int removedEarlierMatches = 0;
+            for (ResolvedChoiceRecord resolvedChoice : resolvedChoices) {
+                if (resolvedChoice.choiceName.equals(choiceName)
+                    && resolvedChoice.originalOccurrence < originalOccurrence) {
+                    removedEarlierMatches++;
+                }
+            }
+
+            int currentOccurrence = originalOccurrence - removedEarlierMatches;
+            int currentIndex = findOccurrenceIndex(currentChoices, choiceName, currentOccurrence);
+            return new ResolvedChoice(choiceName, originalOccurrence, currentOccurrence, currentIndex);
+        }
+
+        void recordResolvedChoice(String choiceName, int originalOccurrence) {
+            resolvedChoices.add(new ResolvedChoiceRecord(choiceName, originalOccurrence));
+        }
+
+        private static int getOccurrenceIndex(java.util.List<String> choices, String choiceName, int upToIndex) {
+            int occurrence = 0;
+            for (int i = 0; i <= upToIndex; i++) {
+                if (choiceName.equals(choices.get(i))) {
+                    occurrence++;
+                }
+            }
+            return occurrence;
+        }
+
+        private static int findOccurrenceIndex(java.util.List<String> choices, String choiceName, int targetOccurrence) {
+            if (targetOccurrence <= 0) {
+                return -1;
+            }
+
+            int occurrence = 0;
+            for (int i = 0; i < choices.size(); i++) {
+                if (choiceName.equals(choices.get(i))) {
+                    occurrence++;
+                    if (occurrence == targetOccurrence) {
+                        return i + 1;
+                    }
+                }
+            }
+            return -1;
+        }
+
+        private static class ResolvedChoiceRecord {
+            final String choiceName;
+            final int originalOccurrence;
+
+            ResolvedChoiceRecord(String choiceName, int originalOccurrence) {
+                this.choiceName = choiceName;
+                this.originalOccurrence = originalOccurrence;
+            }
+        }
+
+        private static class ResolvedChoice {
+            final String choiceName;
+            final int originalOccurrence;
+            final int currentOccurrence;
+            final int currentIndex;
+
+            ResolvedChoice(String choiceName, int originalOccurrence, int currentOccurrence, int currentIndex) {
+                this.choiceName = choiceName;
+                this.originalOccurrence = originalOccurrence;
+                this.currentOccurrence = currentOccurrence;
+                this.currentIndex = currentIndex;
+            }
+        }
+    }
+
+    /**
+     * Represents a mutating tool that has executed but should not respond
+     * until the game state has visibly settled.
+     */
+    private static class PendingMutatingToolResult {
+        final String toolName;
+        final PendingToolCall pendingCall;
+        final Map<String, Object> result;
+        final Map<String, Object> preActionState;
+        Map<String, Object> lastObservedChangedState;
+        int stableChangedStateFrames;
+
+        PendingMutatingToolResult(PendingToolCall pendingCall, Map<String, Object> result, Map<String, Object> preActionState) {
+            this.toolName = pendingCall.toolName;
+            this.pendingCall = pendingCall;
+            this.result = result;
+            this.preActionState = preActionState;
+            this.lastObservedChangedState = null;
+            this.stableChangedStateFrames = 0;
+        }
+
+        void observeState(Map<String, Object> currentState) {
+            if (preActionState.equals(currentState)) {
+                return;
+            }
+
+            if (lastObservedChangedState == null || !lastObservedChangedState.equals(currentState)) {
+                lastObservedChangedState = new java.util.LinkedHashMap<>(currentState);
+                stableChangedStateFrames = 0;
+                return;
+            }
+
+            stableChangedStateFrames++;
+        }
+
+        boolean canCompleteFromStateChange() {
+            return lastObservedChangedState != null && stableChangedStateFrames >= 1;
         }
     }
 }

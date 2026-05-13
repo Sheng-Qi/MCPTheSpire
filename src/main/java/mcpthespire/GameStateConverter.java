@@ -104,6 +104,7 @@ public class GameStateConverter {
                 for(AbstractCard card : AbstractDungeon.player.hand.group) {
                     hand.add(convertCardToJson(card));
                 }
+                response.put("player", convertPlayerToJson(AbstractDungeon.player));
                 response.put("hand", hand);
                 response.put("current_energy", EnergyPanel.totalCount);
                 response.put("max_energy", AbstractDungeon.player.energy.energy);
@@ -111,13 +112,7 @@ public class GameStateConverter {
                 ArrayList<Object> monsters = new ArrayList<>();
                 for(AbstractMonster monster : AbstractDungeon.getCurrRoom().monsters.monsters) {
                     if (!monster.isDeadOrEscaped()) {
-                        HashMap<String, Object> m = new HashMap<>();
-                        m.put("name", monster.name);
-                        m.put("current_hp", monster.currentHealth);
-                        m.put("max_hp", monster.maxHealth);
-                        m.put("intent", monster.intent.name());
-                        m.put("is_gone", monster.isDeadOrEscaped());
-                        monsters.add(m);
+                        monsters.add(convertMonsterToJson(monster));
                     }
                 }
                 response.put("monsters", monsters);

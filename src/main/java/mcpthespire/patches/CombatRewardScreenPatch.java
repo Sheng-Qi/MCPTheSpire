@@ -16,18 +16,24 @@ import java.util.ArrayList;
 )
 public class CombatRewardScreenPatch {
 
+    private static int previousSelectableRewardCount = -1;
+
 
     @SpireInsertPatch(
             locator=Locator.class
     )
     public static void Insert(CombatRewardScreen _instance) {
-        // This will deal with linked relics / keys
+        int selectableRewardCount = 0;
         for(RewardItem reward : _instance.rewards) {
-            if (reward.isDone) {
-                return;
+            if (!reward.isDone) {
+                selectableRewardCount++;
             }
         }
-        GameStateListener.registerStateChange();
+
+        if (selectableRewardCount != previousSelectableRewardCount) {
+            GameStateListener.registerStateChange();
+            previousSelectableRewardCount = selectableRewardCount;
+        }
     }
 
     private static class Locator extends SpireInsertLocator {
