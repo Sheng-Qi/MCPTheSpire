@@ -253,6 +253,154 @@ public class GameStateConverter {
         return state;
     }
 
+    public static HashMap<String, Object> getSharedContext(boolean includeMapGraph) {
+        HashMap<String, Object> context = new HashMap<>();
+        if (!CommandExecutor.isInDungeon()) {
+            context.put("in_game", false);
+            return context;
+        }
+
+        context.put("character", AbstractDungeon.player.chosenClass.name());
+        context.put("act", AbstractDungeon.actNum);
+        context.put("floor", AbstractDungeon.floorNum);
+        context.put("ascension_level", AbstractDungeon.ascensionLevel);
+        context.put("seed", Settings.seed);
+        context.put("gold", AbstractDungeon.player.gold);
+        context.put("player_hp", AbstractDungeon.player.currentHealth);
+        context.put("player_max_hp", AbstractDungeon.player.maxHealth);
+        context.put("curse_count", countCurses(AbstractDungeon.player.masterDeck.group));
+
+        if (!AbstractDungeon.bossList.isEmpty()) {
+            context.put("boss", AbstractDungeon.bossList.get(0));
+        }
+
+        context.put("map", buildMapContext(includeMapGraph));
+        context.put("deck", convertDeckToJson(AbstractDungeon.player.masterDeck.group));
+        context.put("relics", convertRelicsToJson(AbstractDungeon.player.relics));
+        context.put("potions", convertPotionSlotsToJson(AbstractDungeon.player.potions));
+        return context;
+    }
+
+    public static HashMap<String, Object> getDecisionContext() {
+        HashMap<String, Object> context = new HashMap<>();
+        if (!CommandExecutor.isInDungeon()) {
+            context.put("screen_type", "MAIN_MENU");
+            context.put("available_commands", CommandExecutor.getAvailableCommands());
+            return context;
+        }
+
+        ChoiceScreenUtils.ChoiceType screenType = ChoiceScreenUtils.getCurrentChoiceType();
+        context.put("screen_type", screenType.name());
+        context.put("screen_name", AbstractDungeon.screen.name());
+        context.put("room_phase", AbstractDungeon.getCurrRoom().phase.toString());
+        context.put("room_type", AbstractDungeon.getCurrRoom().getClass().getSimpleName());
+
+        if (CommandExecutor.isChooseCommandAvailable()) {
+            context.put("choice_list", ChoiceScreenUtils.getCurrentChoiceList());
+        }
+
+        context.put("can_proceed", ChoiceScreenUtils.isConfirmButtonAvailable());
+        context.put("can_cancel", ChoiceScreenUtils.isCancelButtonAvailable());
+        if (ChoiceScreenUtils.isConfirmButtonAvailable()) {
+            context.put("proceed_button", ChoiceScreenUtils.getConfirmButtonText());
+        }
+        if (ChoiceScreenUtils.isCancelButtonAvailable()) {
+            context.put("cancel_button", ChoiceScreenUtils.getCancelButtonText());
+        }
+
+        context.put("screen_state", getScreenState());
+
+        if (AbstractDungeon.getCurrRoom().phase.equals(AbstractRoom.RoomPhase.COMBAT)) {
+            context.putAll(getCombatState());
+        }
+
+        return context;
+    }
+
+    public static HashMap<String, Object> getDerivedContext() {
+        HashMap<String, Object> context = new HashMap<>();
+        if (!CommandExecutor.isInDungeon()) {
+            context.put("screen_type", "MAIN_MENU");
+            return context;
+        }
+
+        ChoiceScreenUtils.ChoiceType screenType = ChoiceScreenUtils.getCurrentChoiceType();
+        context.put("screen_type", screenType.name());
+
+        if (AbstractDungeon.getCurrRoom().phase.equals(AbstractRoom.RoomPhase.COMBAT)) {
+            context.put("alive_enemy_count", countAliveMonsters());
+            context.put("playable_card_count", countPlayableCards());
+            context.put("incoming_damage_estimate", computeIncomingDamageEstimate());
+        } else if (screenType == ChoiceScreenUtils.ChoiceType.MAP) {
+            context.put("reachable_next_nodes_count", ChoiceScreenUtils.getMapScreenNodeChoices().size());
+        } else if (CommandExecutor.isChooseCommandAvailable()) {
+            context.put("choice_count", ChoiceScreenUtils.getCurrentChoiceList().size());
+        }
+
+        return context;
+    }
+
+    public static String getDecisionType() {
+        if (!CommandExecutor.isInDungeon()) {
+            return "menu_action";
+        }
+
+        ChoiceScreenUtils.ChoiceType screenType = ChoiceScreenUtils.getCurrentChoiceType();
+        if (AbstractDungeon.getCurrRoom().phase.equals(AbstractRoom.RoomPhase.COMBAT) && screenType == ChoiceScreenUtils.ChoiceType.NONE) {
+            return "combat_action";
+        }
+
+        switch (screenType) {
+            case MAP:
+                return "map_path_choice";
+            case CARD_REWARD:
+                return "card_reward_choice";
+            case COMBAT_REWARD:
+                return "combat_reward_choice";
+            case BOSS_REWARD:
+                return "boss_reward_choice";
+            case EVENT:
+                return "event_choice";
+            case SHOP_ROOM:
+            case SHOP_SCREEN:
+                return "shop_choice";
+            case REST:
+                return "campfire_choice";
+            case CHEST:
+                return "chest_choice";
+            case GRID:
+                return "grid_selection";
+            case HAND_SELECT:
+                return "hand_select";
+            case COMPLETE:
+                return "room_complete";
+            case GAME_OVER:
+                return "game_over";
+            default:
+                return "screen_action";
+        }
+    }
+
+    public static String getCardEntityId(AbstractCard card) {
+        return "card:" + card.uuid.toString();
+    }
+
+    public static String getMonsterEntityId(AbstractMonster monster) {
+        return buildMonsterEntityId(monster);
+    }
+
+    public static String getMapNodeEntityId(MapRoomNode node) {
+        return buildMapNodeEntityId(node);
+    }
+
+    public static String getPotionSlotEntityId(AbstractPotion potion, int slotIndex) {
+        return buildPotionSlotEntityId(potion, slotIndex);
+    }
+
+    public static String getRelicEntityId(AbstractRelic relic) {
+        return buildRelicEntityId(relic);
+    }
+
     private static ArrayList<Object> convertRelicsToJson(ArrayList<AbstractRelic> relics) {
         ArrayList<Object> result = new ArrayList<>();
         for (AbstractRelic relic : relics) {
@@ -275,6 +423,108 @@ public class GameStateConverter {
             result.add(convertPotionToJson(potion));
         }
         return result;
+    }
+
+    private static ArrayList<Object> convertPotionSlotsToJson(ArrayList<AbstractPotion> potions) {
+        ArrayList<Object> result = new ArrayList<>();
+        for (int i = 0; i < potions.size(); i++) {
+            HashMap<String, Object> jsonPotion = convertPotionToJson(potions.get(i));
+            jsonPotion.put("slot", i + 1);
+            jsonPotion.put("entity_id", buildPotionSlotEntityId(potions.get(i), i + 1));
+            result.add(jsonPotion);
+        }
+        return result;
+    }
+
+    private static HashMap<String, Object> buildMapContext(boolean includeMapGraph) {
+        HashMap<String, Object> mapContext = new HashMap<>();
+        if (AbstractDungeon.getCurrMapNode() != null) {
+            mapContext.put("current_node", convertMapRoomNodeToJson(AbstractDungeon.getCurrMapNode()));
+        }
+
+        ArrayList<Object> reachableNodes = new ArrayList<>();
+        for (MapRoomNode node : ChoiceScreenUtils.getMapScreenNodeChoices()) {
+            reachableNodes.add(convertMapRoomNodeToJson(node));
+        }
+        mapContext.put("reachable_next_nodes", reachableNodes);
+
+        if (includeMapGraph) {
+            mapContext.put("graph", convertMapToJson());
+        }
+
+        return mapContext;
+    }
+
+    private static int countCurses(ArrayList<AbstractCard> cards) {
+        int count = 0;
+        for (AbstractCard card : cards) {
+            if (card.type == AbstractCard.CardType.CURSE) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int countAliveMonsters() {
+        int count = 0;
+        for (AbstractMonster monster : AbstractDungeon.getCurrRoom().monsters.monsters) {
+            if (!monster.isDeadOrEscaped()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int countPlayableCards() {
+        int count = 0;
+        AbstractMonster defaultTarget = getFirstAliveMonster();
+        for (AbstractCard card : AbstractDungeon.player.hand.group) {
+            boolean canUse;
+            if (card.target == AbstractCard.CardTarget.ENEMY || card.target == AbstractCard.CardTarget.SELF_AND_ENEMY) {
+                canUse = defaultTarget != null && card.canUse(AbstractDungeon.player, defaultTarget);
+            } else {
+                canUse = card.canUse(AbstractDungeon.player, null);
+            }
+            if (canUse) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int computeIncomingDamageEstimate() {
+        if (AbstractDungeon.player.hasRelic(RunicDome.ID)) {
+            return 0;
+        }
+
+        int total = 0;
+        for (AbstractMonster monster : AbstractDungeon.getCurrRoom().monsters.monsters) {
+            if (monster.isDeadOrEscaped()) {
+                continue;
+            }
+
+            EnemyMoveInfo moveInfo = (EnemyMoveInfo) ReflectionHacks.getPrivate(monster, AbstractMonster.class, "move");
+            if (moveInfo == null) {
+                continue;
+            }
+
+            int intentDmg = (int) ReflectionHacks.getPrivate(monster, AbstractMonster.class, "intentDmg");
+            int adjustedDamage = moveInfo.baseDamage > 0 ? intentDmg : moveInfo.baseDamage;
+            if (adjustedDamage > 0) {
+                int hits = moveInfo.isMultiDamage ? moveInfo.multiplier : 1;
+                total += adjustedDamage * Math.max(hits, 1);
+            }
+        }
+        return total;
+    }
+
+    private static AbstractMonster getFirstAliveMonster() {
+        for (AbstractMonster monster : AbstractDungeon.getCurrRoom().monsters.monsters) {
+            if (!monster.isDeadOrEscaped()) {
+                return monster;
+            }
+        }
+        return null;
     }
 
     private static HashMap<String, Object> getRoomState() {
@@ -413,6 +663,7 @@ public class GameStateConverter {
         ArrayList<Object> shopCards = new ArrayList<>();
         ArrayList<Object> shopRelics = new ArrayList<>();
         ArrayList<Object> shopPotions = new ArrayList<>();
+        ArrayList<Object> availableShopActions = new ArrayList<>();
         for(AbstractCard card : ChoiceScreenUtils.getShopScreenCards()) {
             HashMap<String, Object> jsonCard = convertCardToJson(card);
             jsonCard.put("price", card.price);
@@ -433,7 +684,70 @@ public class GameStateConverter {
         state.put("potions", shopPotions);
         state.put("purge_available", AbstractDungeon.shopScreen.purgeAvailable);
         state.put("purge_cost", ShopScreen.actualPurgeCost);
+        ArrayList<Object> availableShopItems = ChoiceScreenUtils.getAvailableShopItems();
+        for (int i = 0; i < availableShopItems.size(); i++) {
+            availableShopActions.add(convertShopActionToJson(availableShopItems.get(i), i + 1));
+        }
+        state.put("available_shop_actions", availableShopActions);
         return state;
+    }
+
+    private static HashMap<String, Object> convertShopActionToJson(Object shopItem, int choiceIndex) {
+        HashMap<String, Object> action = new HashMap<>();
+        action.put("choice_index", choiceIndex);
+
+        if (shopItem instanceof String) {
+            action.put("entity_id", "shop_action:purge");
+            action.put("kind", "purge_card");
+            action.put("label", "Purge a card");
+            action.put("price", ShopScreen.actualPurgeCost);
+            action.put("resulting_screen_type", "GRID");
+            return action;
+        }
+
+        if (shopItem instanceof AbstractCard) {
+            AbstractCard card = (AbstractCard) shopItem;
+            HashMap<String, Object> jsonCard = convertCardToJson(card);
+            jsonCard.put("price", card.price);
+            action.put("entity_id", "shop_action:buy_card:" + card.uuid.toString());
+            action.put("kind", "buy_card");
+            action.put("label", "Buy " + card.name);
+            action.put("price", card.price);
+            action.put("item_entity_id", getCardEntityId(card));
+            action.put("card", jsonCard);
+            return action;
+        }
+
+        if (shopItem instanceof StoreRelic) {
+            StoreRelic relic = (StoreRelic) shopItem;
+            HashMap<String, Object> jsonRelic = convertRelicToJson(relic.relic);
+            jsonRelic.put("price", relic.price);
+            action.put("entity_id", "shop_action:buy_relic:" + relic.relic.relicId);
+            action.put("kind", "buy_relic");
+            action.put("label", "Buy " + relic.relic.name);
+            action.put("price", relic.price);
+            action.put("item_entity_id", getRelicEntityId(relic.relic));
+            action.put("relic", jsonRelic);
+            return action;
+        }
+
+        if (shopItem instanceof StorePotion) {
+            StorePotion potion = (StorePotion) shopItem;
+            HashMap<String, Object> jsonPotion = convertPotionToJson(potion.potion);
+            jsonPotion.put("price", potion.price);
+            action.put("entity_id", "shop_action:buy_potion:" + choiceIndex + ":" + potion.potion.ID);
+            action.put("kind", "buy_potion");
+            action.put("label", "Buy " + potion.potion.name);
+            action.put("price", potion.price);
+            action.put("item_entity_id", "potion:" + potion.potion.ID);
+            action.put("potion", jsonPotion);
+            return action;
+        }
+
+        action.put("entity_id", "shop_action:unknown:" + choiceIndex);
+        action.put("kind", "choose_option");
+        action.put("label", String.valueOf(shopItem));
+        return action;
     }
 
     private static HashMap<String, Object> getGridState() {
@@ -604,6 +918,7 @@ public class GameStateConverter {
 
     private static HashMap<String, Object> convertMapRoomNodeToJson(MapRoomNode node) {
         HashMap<String, Object> jsonNode = convertCoordinatesToJson(node.x, node.y);
+        jsonNode.put("entity_id", buildMapNodeEntityId(node));
         jsonNode.put("symbol", node.getRoomSymbol(true));
         return jsonNode;
     }
@@ -611,6 +926,7 @@ public class GameStateConverter {
     private static HashMap<String, Object> convertCardToJson(AbstractCard card) {
         HashMap<String, Object> jsonCard = new HashMap<>();
         // Essential fields - always include
+        jsonCard.put("entity_id", getCardEntityId(card));
         jsonCard.put("name", card.name);
         jsonCard.put("uuid", card.uuid.toString());
         jsonCard.put("id", card.cardID);
@@ -677,6 +993,7 @@ public class GameStateConverter {
     private static HashMap<String, Object> convertMonsterToJson(AbstractMonster monster) {
         HashMap<String, Object> jsonMonster = new HashMap<>();
         // Essential fields
+        jsonMonster.put("entity_id", buildMonsterEntityId(monster));
         jsonMonster.put("id", monster.id);
         jsonMonster.put("name", monster.name);
         jsonMonster.put("current_hp", monster.currentHealth);
@@ -685,10 +1002,10 @@ public class GameStateConverter {
 
         // Intent - hidden with Runic Dome
         if (AbstractDungeon.player.hasRelic(RunicDome.ID)) {
-            jsonMonster.put("intent", AbstractMonster.Intent.NONE);
+            jsonMonster.put("intent", AbstractMonster.Intent.NONE.name());
         } else {
-            jsonMonster.put("intent", monster.intent.name());
             EnemyMoveInfo moveInfo = (EnemyMoveInfo)ReflectionHacks.getPrivate(monster, AbstractMonster.class, "move");
+            jsonMonster.put("intent", resolveMonsterIntent(monster, moveInfo));
             if (moveInfo != null) {
                 // Combine move info into a single object for cleaner output
                 HashMap<String, Object> move = new HashMap<>();
@@ -723,9 +1040,35 @@ public class GameStateConverter {
         return jsonMonster;
     }
 
+    private static String resolveMonsterIntent(AbstractMonster monster, EnemyMoveInfo moveInfo) {
+        AbstractMonster.Intent resolvedIntent = monster.intent;
+        if ((resolvedIntent == null
+                || resolvedIntent == AbstractMonster.Intent.DEBUG
+                || resolvedIntent == AbstractMonster.Intent.UNKNOWN)
+                && moveInfo != null
+                && moveInfo.intent != null
+                && moveInfo.intent != AbstractMonster.Intent.DEBUG) {
+            resolvedIntent = moveInfo.intent;
+        }
+
+        if (resolvedIntent == null) {
+            return AbstractMonster.Intent.NONE.name();
+        }
+
+        if ((resolvedIntent == AbstractMonster.Intent.DEBUG || resolvedIntent == AbstractMonster.Intent.UNKNOWN) && moveInfo != null) {
+            if (moveInfo.baseDamage > 0) {
+                return AbstractMonster.Intent.ATTACK.name();
+            }
+            return AbstractMonster.Intent.UNKNOWN.name();
+        }
+
+        return resolvedIntent.name();
+    }
+
     private static HashMap<String, Object> convertPlayerToJson(AbstractPlayer player) {
         HashMap<String, Object> jsonPlayer = new HashMap<>();
         // Essential fields
+        jsonPlayer.put("entity_id", "player");
         jsonPlayer.put("current_hp", player.currentHealth);
         jsonPlayer.put("max_hp", player.maxHealth);
         jsonPlayer.put("current_energy", EnergyPanel.totalCount);
@@ -824,6 +1167,7 @@ public class GameStateConverter {
 
     private static HashMap<String, Object> convertRelicToJson(AbstractRelic relic) {
         HashMap<String, Object> jsonRelic = new HashMap<>();
+        jsonRelic.put("entity_id", buildRelicEntityId(relic));
         jsonRelic.put("id", relic.relicId);
         jsonRelic.put("name", relic.name);
         // Counter: -1 means unused, -2 means special, only include if active
@@ -835,6 +1179,7 @@ public class GameStateConverter {
 
     private static HashMap<String, Object> convertPotionToJson(AbstractPotion potion) {
         HashMap<String, Object> jsonPotion = new HashMap<>();
+        jsonPotion.put("entity_id", "potion:" + potion.ID);
         jsonPotion.put("id", potion.ID);
         jsonPotion.put("name", potion.name);
 
@@ -869,6 +1214,29 @@ public class GameStateConverter {
             jsonOrb.put("passive", orb.passiveAmount);
         }
         return jsonOrb;
+    }
+
+    private static String buildMonsterEntityId(AbstractMonster monster) {
+        int index = -1;
+        for (int i = 0; i < AbstractDungeon.getCurrRoom().monsters.monsters.size(); i++) {
+            if (AbstractDungeon.getCurrRoom().monsters.monsters.get(i) == monster) {
+                index = i;
+                break;
+            }
+        }
+        return "monster:" + index + ":" + monster.id;
+    }
+
+    private static String buildMapNodeEntityId(MapRoomNode node) {
+        return "map_node:" + node.x + ":" + node.y;
+    }
+
+    private static String buildPotionSlotEntityId(AbstractPotion potion, int slotIndex) {
+        return "potion_slot:" + slotIndex + ":" + potion.ID;
+    }
+
+    private static String buildRelicEntityId(AbstractRelic relic) {
+        return "relic:" + relic.relicId;
     }
 
 }

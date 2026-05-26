@@ -26,9 +26,12 @@ public class MCPToolHandler {
 
     private static final Logger logger = LogManager.getLogger(MCPToolHandler.class.getName());
     private static final Gson gson = new Gson();
+    private final AgentProtocolService agentProtocolService;
 
     // Read-only tools (do not mutate game state)
     private static final Set<String> READ_ONLY_TOOLS = new HashSet<>(Arrays.asList(
+        "get_decision_bundle",
+        "get_static_reference",
         "get_game_state",
         "get_screen_state",
         "get_available_commands",
@@ -41,6 +44,10 @@ public class MCPToolHandler {
         "get_card_info",
         "get_relic_info"
     ));
+
+    public MCPToolHandler() {
+        this.agentProtocolService = new AgentProtocolService(this);
+    }
 
     /**
      * Check if a tool is read-only (does not mutate game state).
@@ -59,11 +66,66 @@ public class MCPToolHandler {
         return HTTP_THREAD_SAFE_TOOLS.contains(toolName);
     }
 
+    public boolean shouldAutoEnrichWithState(String toolName) {
+        return !"execute_agent_action".equals(toolName);
+    }
+
     /**
      * Get all available tool definitions.
      */
     public List<Map<String, Object>> getToolDefinitions() {
         List<Map<String, Object>> tools = new ArrayList<>();
+
+        Map<String, Object> decisionBundleProps = new HashMap<>();
+        decisionBundleProps.put("detail_level", MCPProtocol.createEnumProperty(
+            "Bundle detail level (optional, default: full)",
+            Arrays.asList("full", "compact")
+        ));
+        decisionBundleProps.put("context_mode", MCPProtocol.createEnumProperty(
+            "Context delivery mode (optional, default: full_inline)",
+            Arrays.asList("full_inline", "session_ref_plus_delta")
+        ));
+        decisionBundleProps.put("action_view", MCPProtocol.createEnumProperty(
+            "Legal action view (optional, default: factorized)",
+            Arrays.asList("factorized", "atomic")
+        ));
+        decisionBundleProps.put("include_diff", MCPProtocol.createProperty("boolean", "Include previous transition_diff when available (optional, default: true)"));
+        decisionBundleProps.put("include_next_map_graph", MCPProtocol.createProperty("boolean", "Include map graph in shared_context.map.graph (optional, default: false)"));
+        tools.add(MCPProtocol.createToolDefinition(
+            "get_decision_bundle",
+            "RECOMMENDED high-level tool. Return a complete decision bundle with run_id, decision_id, shared_context, decision_context, derived_context, and legal_actions.",
+            MCPProtocol.createInputSchema(decisionBundleProps, null)
+        ));
+
+        Map<String, Object> executeAgentActionProps = new HashMap<>();
+        executeAgentActionProps.put("decision_id", MCPProtocol.createProperty("string", "Decision ID returned by get_decision_bundle (required)"));
+        executeAgentActionProps.put("action_group_id", MCPProtocol.createProperty("string", "Chosen action group ID from legal_actions (required)"));
+        Map<String, Object> bindingsProp = new HashMap<>();
+        bindingsProp.put("type", "object");
+        bindingsProp.put("description", "Parameter bindings keyed by parameter name, e.g. {target: enemy_0} or {choice: choice:map:1}");
+        executeAgentActionProps.put("bindings", bindingsProp);
+        executeAgentActionProps.put("return_next_bundle", MCPProtocol.createProperty("boolean", "When true, return next_decision_bundle after execution (optional, default: true)"));
+        tools.add(MCPProtocol.createToolDefinition(
+            "execute_agent_action",
+            "RECOMMENDED high-level mutating tool. Execute one structured agent action, return transition_diff, and optionally next_decision_bundle.",
+            MCPProtocol.createInputSchema(executeAgentActionProps, Arrays.asList("decision_id", "action_group_id"))
+        ));
+
+        Map<String, Object> staticReferenceProps = new HashMap<>();
+        staticReferenceProps.put("reference_type", MCPProtocol.createEnumProperty(
+            "Static reference domain (required)",
+            Arrays.asList("cards", "relics")
+        ));
+        Map<String, Object> idsProp = new HashMap<>();
+        idsProp.put("type", "array");
+        idsProp.put("items", MCPProtocol.createProperty("string", "Reference ID"));
+        idsProp.put("description", "IDs to fetch from the selected static reference domain");
+        staticReferenceProps.put("ids", idsProp);
+        tools.add(MCPProtocol.createToolDefinition(
+            "get_static_reference",
+            "Optional high-level reference tool. Fetch static card or relic metadata by ID for prompt building or training preprocessing.",
+            MCPProtocol.createInputSchema(staticReferenceProps, Arrays.asList("reference_type", "ids"))
+        ));
 
         // get_game_state - Get game state with optional filtering
         Map<String, Object> getGameStateProps = new HashMap<>();
@@ -272,6 +334,12 @@ public class MCPToolHandler {
     public Map<String, Object> executeTool(String toolName, JsonObject arguments) {
         try {
             switch (toolName) {
+                case "get_decision_bundle":
+                    return executeGetDecisionBundle(arguments);
+
+                case "get_static_reference":
+                    return executeGetStaticReference(arguments);
+
                 case "get_game_state":
                     return executeGetGameState(arguments);
 
@@ -318,6 +386,10 @@ public class MCPToolHandler {
                     // Handled by MCPServer for async execution
                     return MCPProtocol.buildToolCallResult("Error: execute_actions should be handled by MCPServer", true);
 
+                case "execute_agent_action":
+                    // Handled by MCPServer for async execution
+                    return MCPProtocol.buildToolCallResult("Error: execute_agent_action should be handled by MCPServer", true);
+
                 case "start_game":
                     return executeStartGame(arguments);
 
@@ -339,6 +411,22 @@ public class MCPToolHandler {
             logger.error("Error executing tool: " + toolName, e);
             return MCPProtocol.buildToolCallResult("Internal error: " + e.getMessage(), true);
         }
+    }
+
+    public AgentProtocolService.PreparedAgentAction prepareAgentAction(JsonObject arguments) throws InvalidCommandException {
+        return agentProtocolService.prepareAndExecuteAgentAction(arguments);
+    }
+
+    public Map<String, Object> finalizeAgentAction(AgentProtocolService.PreparedAgentAction preparedAction) {
+        return MCPProtocol.buildToolCallResultJson(agentProtocolService.finalizeAgentAction(preparedAction));
+    }
+
+    private Map<String, Object> executeGetDecisionBundle(JsonObject args) {
+        return MCPProtocol.buildToolCallResultJson(agentProtocolService.getDecisionBundle(args));
+    }
+
+    private Map<String, Object> executeGetStaticReference(JsonObject args) throws InvalidCommandException {
+        return MCPProtocol.buildToolCallResultJson(agentProtocolService.getStaticReference(args));
     }
 
     private Map<String, Object> executeGetGameState(JsonObject args) {

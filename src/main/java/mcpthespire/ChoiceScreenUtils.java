@@ -659,7 +659,7 @@ public class ChoiceScreenUtils {
         return (ArrayList<StorePotion>) ReflectionHacks.getPrivate(screen, ShopScreen.class, "potions");
     }
 
-    private static ArrayList<Object> getAvailableShopItems() {
+    public static ArrayList<Object> getAvailableShopItems() {
         ArrayList<Object> choices = new ArrayList<>();
         ShopScreen screen = AbstractDungeon.shopScreen;
         if(screen.purgeAvailable && AbstractDungeon.player.gold >= ShopScreen.actualPurgeCost) {

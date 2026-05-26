@@ -48,6 +48,7 @@ public class MCPServer implements Runnable {
 
     // Pending batch execution state (for execute_actions across multiple frames)
     private PendingBatchExecution pendingBatch = null;
+    private PendingAgentActionExecution pendingAgentActionExecution = null;
     private PendingMutatingToolResult pendingMutatingToolResult = null;
     private long lastBatchActionTime = 0;
     private static final long MIN_BATCH_ACTION_INTERVAL_MS = 50; // Minimum time between batch actions
@@ -404,6 +405,21 @@ public class MCPServer implements Runnable {
             return;
         }
 
+        if (pendingAgentActionExecution != null) {
+            if (pendingAgentActionExecution.finishRequested) {
+                if (shouldWaitForReady()) {
+                    return;
+                }
+
+                Map<String, Object> result = toolHandler.finalizeAgentAction(pendingAgentActionExecution.preparedAction);
+                pendingAgentActionExecution.pendingCall.complete(result);
+                logger.info("Agent action finished");
+                pendingAgentActionExecution = null;
+                waitStartTime = 0;
+                return;
+            }
+        }
+
         // Then, complete any pending mutating tool once the UI settles.
         if (pendingMutatingToolResult != null) {
             Map<String, Object> currentState = mcpthespire.GameStateConverter.getScreenOnlyState();
@@ -413,7 +429,10 @@ public class MCPServer implements Runnable {
                 return;
             }
 
-            Map<String, Object> result = enrichWithState(pendingMutatingToolResult.result);
+            Map<String, Object> result = pendingMutatingToolResult.result;
+            if (toolHandler.shouldAutoEnrichWithState(pendingMutatingToolResult.toolName)) {
+                result = enrichWithState(result);
+            }
             pendingMutatingToolResult.pendingCall.complete(result);
             logger.info("Tool result added after state settled: " + pendingMutatingToolResult.toolName);
             pendingMutatingToolResult = null;
@@ -438,6 +457,11 @@ public class MCPServer implements Runnable {
             // Special handling for execute_actions - use async batch execution
             if ("execute_actions".equals(pending.toolName)) {
                 startBatchExecution(pending);
+                return;
+            }
+
+            if ("execute_agent_action".equals(pending.toolName)) {
+                startAgentActionExecution(pending);
                 return;
             }
 
@@ -466,6 +490,22 @@ public class MCPServer implements Runnable {
                 logger.error("Error executing tool: " + pending.toolName, e);
                 pending.complete(MCPProtocol.buildToolCallResult("Error: " + e.getMessage(), true));
             }
+        }
+    }
+
+    private void startAgentActionExecution(PendingToolCall pendingCall) {
+        try {
+            AgentProtocolService.PreparedAgentAction preparedAction = toolHandler.prepareAgentAction(pendingCall.arguments);
+            if (Boolean.TRUE.equals(preparedAction.toolResult.get("isError"))) {
+                pendingCall.complete(preparedAction.toolResult);
+                return;
+            }
+
+            pendingAgentActionExecution = new PendingAgentActionExecution(pendingCall, preparedAction);
+            waitStartTime = 0;
+        } catch (Exception e) {
+            logger.error("Error executing agent action", e);
+            pendingCall.complete(MCPProtocol.buildToolCallResult("Error: " + e.getMessage(), true));
         }
     }
 
@@ -692,7 +732,10 @@ public class MCPServer implements Runnable {
      * Check if there are pending tool calls or batch actions to process.
      */
     public boolean hasPendingToolCalls() {
-        return !pendingToolCalls.isEmpty() || pendingBatch != null || pendingMutatingToolResult != null;
+        return !pendingToolCalls.isEmpty()
+            || pendingBatch != null
+            || pendingAgentActionExecution != null
+            || pendingMutatingToolResult != null;
     }
 
     public String getHost() {
@@ -913,6 +956,19 @@ public class MCPServer implements Runnable {
                 this.currentOccurrence = currentOccurrence;
                 this.currentIndex = currentIndex;
             }
+        }
+    }
+
+    private static class PendingAgentActionExecution {
+        final PendingToolCall pendingCall;
+        final AgentProtocolService.PreparedAgentAction preparedAction;
+        boolean finishRequested;
+
+        PendingAgentActionExecution(PendingToolCall pendingCall,
+                                    AgentProtocolService.PreparedAgentAction preparedAction) {
+            this.pendingCall = pendingCall;
+            this.preparedAction = preparedAction;
+            this.finishRequested = true;
         }
     }
 
