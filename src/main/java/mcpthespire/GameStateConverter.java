@@ -275,7 +275,7 @@ public class GameStateConverter {
         }
 
         context.put("map", buildMapContext(includeMapGraph));
-        context.put("deck", convertDeckToJson(AbstractDungeon.player.masterDeck.group));
+        context.put("deck", convertDeckToSharedContextJson(AbstractDungeon.player.masterDeck.group));
         context.put("relics", convertRelicsToJson(AbstractDungeon.player.relics));
         context.put("potions", convertPotionSlotsToJson(AbstractDungeon.player.potions));
         return context;
@@ -417,6 +417,24 @@ public class GameStateConverter {
         return result;
     }
 
+    private static ArrayList<Object> convertDeckToSharedContextJson(ArrayList<AbstractCard> cards) {
+        ArrayList<Object> result = new ArrayList<>();
+        for (AbstractCard card : cards) {
+            HashMap<String, Object> jsonCard = convertCardToJson(card);
+            jsonCard.remove("is_playable");
+            jsonCard.remove("damage");
+            jsonCard.remove("base_damage");
+            jsonCard.remove("block");
+            jsonCard.remove("base_block");
+            jsonCard.remove("magic_number");
+            jsonCard.remove("base_magic_number");
+            jsonCard.remove("heal");
+            jsonCard.remove("draw");
+            result.add(jsonCard);
+        }
+        return result;
+    }
+
     private static ArrayList<Object> convertPotionsToJson(ArrayList<AbstractPotion> potions) {
         ArrayList<Object> result = new ArrayList<>();
         for (AbstractPotion potion : potions) {
@@ -553,7 +571,7 @@ public class GameStateConverter {
         ArrayList<Object> options = new ArrayList<>();
         ChoiceScreenUtils.EventDialogType eventDialogType = ChoiceScreenUtils.getEventDialogType();
         AbstractEvent event = AbstractDungeon.getCurrRoom().event;
-        int choice_index = 0;
+        int choice_index = 1;
         if (eventDialogType == ChoiceScreenUtils.EventDialogType.IMAGE || eventDialogType == ChoiceScreenUtils.EventDialogType.ROOM) {
             for (LargeDialogOptionButton button : ChoiceScreenUtils.getEventButtons()) {
                 HashMap<String, Object> json_button = new HashMap<>();

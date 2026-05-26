@@ -85,6 +85,10 @@ public class MCPToolHandler {
             "Context delivery mode (optional, default: full_inline)",
             Arrays.asList("full_inline", "session_ref_plus_delta")
         ));
+        decisionBundleProps.put("known_shared_context_hash", MCPProtocol.createProperty(
+            "string",
+            "Optional shared_context hash already cached by the client. Required for safe session_ref_plus_delta reuse across reconnects."
+        ));
         decisionBundleProps.put("action_view", MCPProtocol.createEnumProperty(
             "Legal action view (optional, default: factorized)",
             Arrays.asList("factorized", "atomic")

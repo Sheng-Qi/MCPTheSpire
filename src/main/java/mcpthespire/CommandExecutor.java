@@ -613,6 +613,7 @@ public class CommandExecutor {
         int ascensionLevel = 0;
         boolean seedSet = false;
         long seed = 0;
+        String seedString = null;
         AbstractPlayer.PlayerClass selectedClass = null;
         for(AbstractPlayer.PlayerClass playerClass : AbstractPlayer.PlayerClass.values()) {
             if(playerClass.name().equalsIgnoreCase(tokens[1])) {
@@ -628,15 +629,22 @@ public class CommandExecutor {
         if(tokens.length >= 3) {
             try {
                 ascensionLevel = Integer.parseInt(tokens[2]);
+                if(ascensionLevel < 0 || ascensionLevel > 20) {
+                    throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.OUT_OF_BOUNDS, tokens[2]);
+                }
+                if(tokens.length >= 4) {
+                    seedString = tokens[3];
+                }
             } catch (NumberFormatException e) {
-                throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.INVALID_ARGUMENT, tokens[2] + usage);
-            }
-            if(ascensionLevel < 0 || ascensionLevel > 20) {
-                throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.OUT_OF_BOUNDS, tokens[2]);
+                if(tokens.length == 3) {
+                    seedString = tokens[2];
+                } else {
+                    throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.INVALID_ARGUMENT, tokens[2] + usage);
+                }
             }
         }
-        if(tokens.length >= 4) {
-            String seedString = tokens[3].toUpperCase();
+        if(seedString != null) {
+            seedString = seedString.toUpperCase();
             if(!seedString.matches("^[A-Z0-9]+$")) {
                 throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.INVALID_ARGUMENT, seedString);
             }

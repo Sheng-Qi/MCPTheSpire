@@ -73,8 +73,15 @@ class AgentProtocolService {
         String actionView = getStringArg(args, "action_view", "factorized");
         boolean includeDiff = getBooleanArg(args, "include_diff", true);
         boolean includeNextMapGraph = getBooleanArg(args, "include_next_map_graph", false);
+        String knownSharedContextHash = getStringArg(args, "known_shared_context_hash", null);
 
-        DecisionFrame frame = buildDecisionFrame(detailLevel, contextMode, actionView, includeDiff, includeNextMapGraph);
+        DecisionFrame frame = buildDecisionFrame(
+            detailLevel,
+            contextMode,
+            actionView,
+            includeDiff,
+            includeNextMapGraph,
+            canUseSharedContextRef(contextMode, knownSharedContextHash));
         lastDecisionFrame = frame;
         logRecord("decision_bundle", frame.bundle);
         return frame.bundle;
@@ -127,7 +134,8 @@ class AgentProtocolService {
             preparedAction.sourceFrame.contextMode,
             preparedAction.sourceFrame.actionView,
             false,
-            preparedAction.sourceFrame.includeNextMapGraph);
+            preparedAction.sourceFrame.includeNextMapGraph,
+            "session_ref_plus_delta".equals(preparedAction.sourceFrame.contextMode));
 
         Map<String, Object> transitionDiff = buildTransitionDiff(preparedAction.sourceFrame, nextFrame, preparedAction);
         lastTransitionDiff = transitionDiff;
@@ -190,7 +198,8 @@ class AgentProtocolService {
                                              String contextMode,
                                              String actionView,
                                              boolean includeDiff,
-                                             boolean includeNextMapGraph) {
+                                             boolean includeNextMapGraph,
+                                             boolean allowSharedContextRef) {
         Map<String, Object> sharedContext = GameStateConverter.getSharedContext(includeNextMapGraph);
         Map<String, Object> decisionContext = GameStateConverter.getDecisionContext();
         Map<String, Object> derivedContext = GameStateConverter.getDerivedContext();
@@ -217,7 +226,8 @@ class AgentProtocolService {
         bundle.put("shared_context_version", sharedContextVersion);
         bundle.put("decision_context_version", decisionCounter);
 
-        if ("session_ref_plus_delta".equals(contextMode)
+        if (allowSharedContextRef
+            && "session_ref_plus_delta".equals(contextMode)
             && lastDecisionFrame != null
             && sharedHash.equals(lastDecisionFrame.sharedContextHash)) {
             bundle.put("context_mode", "session_ref_plus_delta");
@@ -262,6 +272,16 @@ class AgentProtocolService {
         return frame;
     }
 
+    private boolean canUseSharedContextRef(String contextMode, String knownSharedContextHash) {
+        if (!"session_ref_plus_delta".equals(contextMode)) {
+            return false;
+        }
+        if (knownSharedContextHash == null || knownSharedContextHash.isEmpty()) {
+            return false;
+        }
+        return knownSharedContextHash.equals(lastSharedContextHash);
+    }
+
     private LegalActionBuild buildLegalActions(String actionView,
                                                String normalizedScreenType,
                                                String decisionType,
@@ -297,41 +317,47 @@ class AgentProtocolService {
     }
 
     private void buildMenuActions(List<Map<String, Object>> groups, Map<String, ActionGroupRuntime> runtimes) {
-        ActionGroupRuntime startRuntime = new ActionGroupRuntime();
-        startRuntime.actionGroupId = "g_start_game";
-        startRuntime.kind = "start_game";
-        startRuntime.toolName = "start_game";
-        startRuntime.label = "Start Game";
-        startRuntime.parameterName = "character";
-        startRuntime.optionalBindingNames.add("ascension");
-        startRuntime.optionalBindingNames.add("seed");
-        startRuntime.choiceEntityToValue.put("character:IRONCLAD", "IRONCLAD");
-        startRuntime.choiceEntityToValue.put("character:SILENT", "SILENT");
-        startRuntime.choiceEntityToValue.put("character:DEFECT", "DEFECT");
-        startRuntime.choiceEntityToValue.put("character:WATCHER", "WATCHER");
+        List<String> availableCommands = CommandExecutor.getAvailableCommands();
 
-        Map<String, Object> startGroup = new LinkedHashMap<String, Object>();
-        startGroup.put("action_group_id", startRuntime.actionGroupId);
-        startGroup.put("kind", startRuntime.kind);
-        startGroup.put("label", startRuntime.label);
-        List<Map<String, Object>> parameters = new ArrayList<Map<String, Object>>();
-        Map<String, Object> characterParameter = new LinkedHashMap<String, Object>();
-        characterParameter.put("name", "character");
-        characterParameter.put("required", true);
-        characterParameter.put("selection_type", "character");
-        List<Map<String, Object>> characterChoices = new ArrayList<Map<String, Object>>();
-        characterChoices.add(buildChoiceOption("character:IRONCLAD", "IRONCLAD"));
-        characterChoices.add(buildChoiceOption("character:SILENT", "SILENT"));
-        characterChoices.add(buildChoiceOption("character:DEFECT", "DEFECT"));
-        characterChoices.add(buildChoiceOption("character:WATCHER", "WATCHER"));
-        characterParameter.put("choices", characterChoices);
-        parameters.add(characterParameter);
-        startGroup.put("parameters", parameters);
-        groups.add(startGroup);
-        runtimes.put(startRuntime.actionGroupId, startRuntime);
+        if (availableCommands.contains("start")) {
+            ActionGroupRuntime startRuntime = new ActionGroupRuntime();
+            startRuntime.actionGroupId = "g_start_game";
+            startRuntime.kind = "start_game";
+            startRuntime.toolName = "start_game";
+            startRuntime.label = "Start Game";
+            startRuntime.parameterName = "character";
+            startRuntime.optionalBindingNames.add("ascension");
+            startRuntime.optionalBindingNames.add("seed");
+            startRuntime.choiceEntityToValue.put("character:IRONCLAD", "IRONCLAD");
+            startRuntime.choiceEntityToValue.put("character:SILENT", "SILENT");
+            startRuntime.choiceEntityToValue.put("character:DEFECT", "DEFECT");
+            startRuntime.choiceEntityToValue.put("character:WATCHER", "WATCHER");
 
-        if (CardCrawlGame.characterManager.anySaveFileExists()) {
+            Map<String, Object> startGroup = new LinkedHashMap<String, Object>();
+            startGroup.put("action_group_id", startRuntime.actionGroupId);
+            startGroup.put("kind", startRuntime.kind);
+            startGroup.put("label", startRuntime.label);
+            List<Map<String, Object>> parameters = new ArrayList<Map<String, Object>>();
+            Map<String, Object> characterParameter = new LinkedHashMap<String, Object>();
+            characterParameter.put("name", "character");
+            characterParameter.put("required", true);
+            characterParameter.put("selection_type", "character");
+            List<Map<String, Object>> characterChoices = new ArrayList<Map<String, Object>>();
+            characterChoices.add(buildChoiceOption("character:IRONCLAD", "IRONCLAD"));
+            characterChoices.add(buildChoiceOption("character:SILENT", "SILENT"));
+            characterChoices.add(buildChoiceOption("character:DEFECT", "DEFECT"));
+            characterChoices.add(buildChoiceOption("character:WATCHER", "WATCHER"));
+            characterParameter.put("choices", characterChoices);
+            parameters.add(characterParameter);
+            startGroup.put("parameters", parameters);
+            groups.add(startGroup);
+            runtimes.put(startRuntime.actionGroupId, startRuntime);
+        }
+
+        if (availableCommands.contains("continue")) {
             addSimpleAction(groups, runtimes, "g_continue_game", "continue_game", "continue_game", "Continue Game");
+        }
+        if (availableCommands.contains("abandon")) {
             addSimpleAction(groups, runtimes, "g_abandon_run", "abandon_run", "abandon_run", "Abandon Run");
         }
     }
@@ -682,9 +708,14 @@ class AgentProtocolService {
                 continue;
             }
 
+            Map<String, Object> fieldDiff = buildFieldDiff(entityId, beforeState, afterState);
+            if (fieldDiff.isEmpty()) {
+                continue;
+            }
+
             Map<String, Object> diffEntry = new LinkedHashMap<String, Object>();
             diffEntry.put("entity_id", entityId);
-            diffEntry.put("fields", buildFieldDiff(beforeState, afterState));
+            diffEntry.put("fields", fieldDiff);
             changedEntities.add(diffEntry);
         }
 
@@ -707,10 +738,17 @@ class AgentProtocolService {
             }
         }
 
+        List<String> textSummaryParts = new ArrayList<String>(events);
+        for (Map<String, Object> zoneMove : zoneMoves) {
+            textSummaryParts.add(
+                zoneMove.get("card_entity_id") + " moved " + zoneMove.get("from") + " -> " + zoneMove.get("to"));
+        }
+
         Map<String, Object> diff = new LinkedHashMap<String, Object>();
         diff.put("changed_entities", changedEntities);
         diff.put("zone_moves", zoneMoves);
         diff.put("events", events);
+        diff.put("text_summary", String.join("; ", textSummaryParts));
         return diff;
     }
 
@@ -805,7 +843,9 @@ class AgentProtocolService {
         }
     }
 
-    private Map<String, Object> buildFieldDiff(Map<String, Object> beforeState, Map<String, Object> afterState) {
+    private Map<String, Object> buildFieldDiff(String entityId,
+                                               Map<String, Object> beforeState,
+                                               Map<String, Object> afterState) {
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         List<String> keys = new ArrayList<String>();
         if (beforeState != null) {
@@ -820,6 +860,10 @@ class AgentProtocolService {
         }
 
         for (String key : keys) {
+            if (shouldIgnoreFieldInTransitionDiff(entityId, key)) {
+                continue;
+            }
+
             Object beforeValue = beforeState == null ? null : beforeState.get(key);
             Object afterValue = afterState == null ? null : afterState.get(key);
             if (statesEqual(beforeValue, afterValue)) {
@@ -832,6 +876,23 @@ class AgentProtocolService {
         }
 
         return fields;
+    }
+
+    private boolean shouldIgnoreFieldInTransitionDiff(String entityId, String key) {
+        if (entityId == null || key == null) {
+            return false;
+        }
+
+        if (!entityId.startsWith("card:")) {
+            return false;
+        }
+
+        return "is_playable".equals(key)
+            || "damage".equals(key)
+            || "base_damage".equals(key)
+            || "block".equals(key)
+            || "base_block".equals(key)
+            || "magic_number".equals(key);
     }
 
     private void applyDetailLevel(String detailLevel,
