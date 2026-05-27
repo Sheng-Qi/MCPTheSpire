@@ -166,6 +166,24 @@ public class GameStateConverter {
     }
 
     /**
+     * Build an upgrade preview for a card. Creates a copy, upgrades it,
+     * and returns only the fields that change — so the agent can see
+     * exactly what upgrading would improve.
+     */
+    private static HashMap<String, Object> getUpgradePreview(AbstractCard card) {
+        AbstractCard upgraded = card.makeCopy();
+        upgraded.upgrade();
+        HashMap<String, Object> preview = new HashMap<>();
+        preview.put("name", upgraded.name);
+        preview.put("description", upgraded.rawDescription);
+        if (upgraded.cost != card.cost) preview.put("cost", upgraded.cost);
+        if (upgraded.baseDamage != card.baseDamage) preview.put("damage", upgraded.baseDamage);
+        if (upgraded.baseBlock != card.baseBlock) preview.put("block", upgraded.baseBlock);
+        if (upgraded.baseMagicNumber != card.baseMagicNumber) preview.put("magic_number", upgraded.baseMagicNumber);
+        return preview;
+    }
+
+    /**
      * Get detailed relic information by relic ID.
      * Returns relic description, tier, and other details.
      */
@@ -582,6 +600,25 @@ public class GameStateConverter {
                     json_button.put("choice_index", choice_index);
                     choice_index += 1;
                 }
+
+                // Extract card/relic tooltip preview from the button.
+                // LargeDialogOptionButton stores cardToPreview / relicToPreview
+                // so the game can show tooltips on hover. Expose them to the agent.
+                try {
+                    AbstractCard cardPreview = (AbstractCard) ReflectionHacks.getPrivate(
+                        button, LargeDialogOptionButton.class, "cardToPreview");
+                    if (cardPreview != null) {
+                        json_button.put("reward_card", convertCardToJson(cardPreview));
+                    }
+                } catch (Exception ignored) {}
+                try {
+                    AbstractRelic relicPreview = (AbstractRelic) ReflectionHacks.getPrivate(
+                        button, LargeDialogOptionButton.class, "relicToPreview");
+                    if (relicPreview != null) {
+                        json_button.put("reward_relic", convertRelicToJson(relicPreview));
+                    }
+                } catch (Exception ignored) {}
+
                 options.add(json_button);
             }
             state.put("body_text", removeTextFormatting(UpdateBodyTextPatch.bodyText));
@@ -774,16 +811,22 @@ public class GameStateConverter {
         ArrayList<Object> gridSelectedJson = new ArrayList<>();
         ArrayList<AbstractCard> gridCards = ChoiceScreenUtils.getGridScreenCards();
         GridCardSelectScreen screen = AbstractDungeon.gridSelectScreen;
-        for(AbstractCard card : gridCards) {
-            gridJson.add(convertCardToJson(card));
-        }
-        for(AbstractCard card : screen.selectedCards) {
-            gridSelectedJson.add(convertCardToJson(card));
-        }
         int numCards = (int) ReflectionHacks.getPrivate(screen, GridCardSelectScreen.class, "numCards");
         boolean forUpgrade = (boolean) ReflectionHacks.getPrivate(screen, GridCardSelectScreen.class, "forUpgrade");
         boolean forTransform = (boolean) ReflectionHacks.getPrivate(screen, GridCardSelectScreen.class, "forTransform");
         boolean forPurge = (boolean) ReflectionHacks.getPrivate(screen, GridCardSelectScreen.class, "forPurge");
+        for(AbstractCard card : gridCards) {
+            HashMap<String, Object> jsonCard = convertCardToJson(card);
+            // Always include upgrade preview when available
+            HashMap<String, Object> preview = getUpgradePreview(card);
+            if (preview != null && !preview.isEmpty()) {
+                jsonCard.put("upgrade_preview", preview);
+            }
+            gridJson.add(jsonCard);
+        }
+        for(AbstractCard card : screen.selectedCards) {
+            gridSelectedJson.add(convertCardToJson(card));
+        }
         state.put("cards", gridJson);
         state.put("selected_cards", gridSelectedJson);
         state.put("num_cards", numCards);
@@ -1200,6 +1243,7 @@ public class GameStateConverter {
         jsonPotion.put("entity_id", "potion:" + potion.ID);
         jsonPotion.put("id", potion.ID);
         jsonPotion.put("name", potion.name);
+        jsonPotion.put("description", removeTextFormatting(potion.description));
 
         // For empty potion slots, just return minimal info
         if (potion instanceof PotionSlot) {
